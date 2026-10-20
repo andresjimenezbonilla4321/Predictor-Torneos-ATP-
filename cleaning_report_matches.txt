@@ -1,0 +1,20 @@
+Filas de partida: 270,662
+[1] Partidos con el mismo jugador como ganador y perdedor (eliminados): 4
+[2] Partidos duplicados (mismo torneo, jugadores, ronda y resultado) eliminados: 14
+[3] Walkovers / sin resultado (eliminados): 1248
+[4] 'Played and unfinished/abandoned' (eliminados): 9
+[5] Retiradas (RET/DEF): 8858 -> se mantienen con is_retirement=1
+[6] Rondas de clasificación eliminadas: 59699
+[7] Copa Davis eliminada: 7330
+[8] winner_ht fuera de 160-215 cm -> NaN: 6
+[9] winner_age fuera de 14-50 -> NaN: 0
+[8] loser_ht fuera de 160-215 cm -> NaN: 35
+[9] loser_age fuera de 14-50 -> NaN: 0
+[10] winner_entry corrupto -> NaN: 15
+[10] loser_entry corrupto -> NaN: 12
+[11] Minutos incoherentes con el marcador (<1,5 o >9 min/juego) -> NaN: 89
+[12] Partidos con estadísticas incoherentes (0 puntos de saque, etc.) -> stats a NaN: 35
+
+Filas finales: 202,358 (eliminadas 68,304)
+Rango de fechas: 2000-01-03 -> 2026-06-01
+Archivo guardado: atp_matches_clean.csv

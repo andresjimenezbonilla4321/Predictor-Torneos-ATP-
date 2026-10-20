@@ -1,0 +1,33 @@
+Entrenamiento: 122,696 | Validación: 16,583 | Test: 22,303
+
+PASO 1 - Candidatos entrenados con train y medidos en validación (2022-2023)
+  LogReg                                 acierto=0.6460  log-loss=0.6264
+  Árboles prof=3 lr=0.05 n=300 hoja=200  acierto=0.6487  log-loss=0.6257
+  Árboles prof=4 lr=0.03 n=400 hoja=200  acierto=0.6484  log-loss=0.6255
+  Árboles prof=6 lr=0.03 n=300 hoja=100  acierto=0.6481  log-loss=0.6254
+  Árboles prof=8 lr=0.02 n=400 hoja=100  acierto=0.6491  log-loss=0.6256
+  Conjunto (LogReg + media de árboles)   acierto=0.6472  log-loss=0.6252
+
+  Elegido por mayor acierto en validación: Árboles prof=8 lr=0.02 n=400 hoja=100
+  Ojo: el acierto en validación tiene un margen de error de ±0.37 puntos. Diferencias menores
+  que eso entre candidatos son ruido, no mejoras reales.
+
+PASO 2 - Reentrenar con train + val (2005-2023) y examinar en test (2024 en adelante)
+  TEST: acierto=0.6459  log-loss=0.6240  Brier=0.2176
+  Margen de error del acierto en test: ±0.32 puntos
+
+PASO 3 - Acierto según la confianza del modelo (test)
+   confianza  partidos  % del total   acierto
+     >= 0.50     22303       100.0%     64.6%
+     >= 0.60     14325        64.2%     70.5%
+     >= 0.65     10681        47.9%     73.9%
+     >= 0.70      7504        33.6%     77.0%
+     >= 0.75      4822        21.6%     80.2%
+     >= 0.80      2756        12.4%     84.0%
+     >= 0.85      1389         6.2%     87.6%
+
+Acierto por nivel (test):
+  Circuito principal   partidos=  6559  acierto=66.6%
+  Challenger           partidos= 15744  acierto=63.8%
+
+Guardado: predictions_best.csv y train_best_report.txt

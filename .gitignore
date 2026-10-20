@@ -1,0 +1,18 @@
+# Entorno virtual
+.venv/
+
+# Archivos CSV grandes y datasets generados
+atp_matches.csv
+atp_matches_clean.csv
+atp_matches_elo.csv
+atp_matches_features.csv
+atp_matches_serve.csv
+atp_players.csv
+atp_rankings.csv
+model_dataset.csv
+predictions_best.csv
+
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
