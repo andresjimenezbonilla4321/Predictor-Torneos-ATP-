@@ -89,6 +89,16 @@ def main():
             return EnsembleModel(ens_name, [lr, EnsembleModel("Árboles", tr)])
         return next(c for c in [lr] + tr if c.name == best_name)
 
+    # el elegido, entrenado SOLO con train y SIN calibrar: lo usa el backtest de validación
+    # (backtest_tournaments.py --split val) para ajustar la calibración a nivel de torneo
+    if best_name == ens_name:
+        train_only = EnsembleModel(ens_name, [logreg, EnsembleModel("Árboles", trees)])
+    else:
+        train_only = next(c for c in [logreg] + trees if c.name == best_name)
+    MODELS_DIR.mkdir(exist_ok=True)
+    joblib.dump({"model": train_only, "features": FEATURES, "name": train_only.name,
+                 "trained_until": str(train["match_date"].max().date())}, MODELS_DIR / "model_train.joblib")
+
     # ---------- 2) Reentrenar con train + val y examinar en test (una sola vez) ----------
     say("\nPASO 2 - Reentrenar con train + val (2005-2023) y examinar en test (2024 en adelante)")
     model = make_best().fit(fit_rows(pd.concat([train, val])))

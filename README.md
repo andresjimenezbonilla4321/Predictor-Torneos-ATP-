@@ -25,22 +25,39 @@ Informe completo en `backtest_report.txt`.
 
 | Grupo | Torneos | Log-loss del campeón: modelo | Solo Elo | Azar | Mejora frente al Elo (IC 95 %) |
 |---|---:|---:|---:|---:|---|
-| Todos | 678 | **2,808** | 2,920 | 3,502 | +0,112 [+0,068, +0,155] significativa |
-| Grand Slam | 10 | **1,414** | 1,588 | 4,852 | +0,174 [+0,015, +0,334] significativa |
-| Masters 1000 | 23 | **2,571** | 2,943 | 4,400 | +0,372 [+0,006, +0,738] significativa |
-| ATP 250/500 | 118 | 2,576 | 2,560 | 3,398 | −0,017 [−0,099, +0,066] no concluyente |
-| Challenger | 527 | **2,897** | 3,025 | 3,461 | +0,128 [+0,078, +0,178] significativa |
+| Todos | 678 | **2,811** | 2,915 | 3,502 | +0,105 [+0,063, +0,147] significativa |
+| Grand Slam | 10 | **1,415** | 1,580 | 4,852 | +0,165 [+0,003, +0,327] significativa |
+| Masters 1000 | 23 | **2,594** | 2,805 | 4,400 | +0,211 [−0,031, +0,452] no concluyente |
+| ATP 250/500 | 118 | 2,571 | 2,550 | 3,398 | −0,020 [−0,105, +0,064] no concluyente |
+| Challenger | 527 | **2,900** | 3,027 | 3,461 | +0,127 [+0,078, +0,176] significativa |
 
 - **Calibrado también a nivel de torneo**: a los jugadores a los que se daba un 10–20 % de ser
-  campeones, ganaron el 12,9 % de las veces (predicho 13,4 %); para llegar a semis, 25,9 % predicho
-  frente a 26,1 % real. Solo los grandes favoritos (> 50 % de ser campeón, 11 casos) ganaron menos
-  de lo previsto (36 % frente a 54 %): muestra pequeña, pero apunta a algo de exceso de confianza arriba.
+  campeones, ganaron el 13,1 % de las veces (predicho 13,4 %); para llegar a semis, 25,9 % predicho
+  frente a 26,3 % real.
+- **Grandes favoritos**: con ≥ 35 % de ser campeón ganaron algo menos de lo previsto (44 casos:
+  43,4 % predicho, 38,6 % real; en validación 2022–2023, ~42 % frente a ~32 %). La diferencia está
+  dentro del margen de azar con tan pocos casos: hay indicios, no una prueba.
 - **Grand Slams**: el campeón estuvo siempre entre los 4 favoritos del modelo y en 8 de 10 entre
   los 2 primeros (el duelo Sinner–Alcaraz hace que el favorito nº 1 solo ganara 2 de 10).
+- Las cifras por grupo pequeño (Grand Slam, Masters) se mueven unas centésimas según la semilla de
+  la simulación: con 10 o 23 torneos, el intervalo de confianza es lo que hay que mirar.
+
+### ¿Hace falta una calibración distinta para torneos?
+
+Probado y descartado. En los torneos de **validación** (2022–2023, modelo entrenado solo con
+2005–2021) se buscó el factor de calibración que mejor predice campeones (`backtest_tune_val.txt`):
+el óptimo es a ≈ 0,80, prácticamente igual que el 0,875 que ya se usa para partidos (log-loss
+2,7937 frente a 2,7938 con 0,85). En **test**, a = 0,80 frente a 0,875 da una mejora de +0,0001
+[−0,007, +0,007]: ninguna. El simulador mantiene la calibración de partidos. Recalibrar de forma
+global tampoco corrige la ligera sobreconfianza en los grandes favoritos, así que si existe es un
+efecto específico de los jugadores de arriba, no de la calibración.
 
 ```bash
 python backtest_tournaments.py                                  # todos los torneos de test
 python backtest_tournaments.py --show "Roland Garros" --year 2025   # un torneo concreto
+python backtest_tournaments.py --split val                      # torneos de validación (2022-2023)
+python backtest_tournaments.py --tune-a                         # buscar la calibración de torneos en validación
+python backtest_tournaments.py --compare-a 0.80                 # comparar otra calibración en test
 ```
 
 ## Instalación
@@ -86,7 +103,7 @@ Por defecto se usa una semana después del último torneo de los datos.
 | 4 | `add_features.py` | Forma, descanso, inactividad, cansancio y cara a cara |
 | 5 | `add_serve_stats.py` | % puntos ganados al saque/resto, aces, dobles faltas, 1er saque (suavizados) |
 | 6 | `build_model_dataset.py` | Jugadores A/B al azar, diferencias A − B, split temporal |
-| 7 | `train_best.py` | Elige modelo por log-loss en validación, calibra, evalúa en test; guarda `models/best_model.joblib` (todos los datos) y `models/model_trainval.joblib` (2005–2023, para el backtest) |
+| 7 | `train_best.py` | Elige modelo por log-loss en validación, calibra, evalúa en test; guarda `models/best_model.joblib` (todos los datos) y `models/model_trainval.joblib` (2005–2023) y `models/model_train.joblib` (2005–2021) para el backtest |
 | — | `train_baseline.py` | Comparativa: cuánto aporta cada grupo de características |
 | — | `predict.py` | Predicción de partidos futuros con el estado actual de cada jugador |
 | — | `simulate_tournament.py` | Simulación Monte Carlo de un cuadro |

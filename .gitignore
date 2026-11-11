@@ -12,6 +12,7 @@ atp_rankings.csv
 model_dataset.csv
 predictions_best.csv
 backtest_tournaments.csv
+backtest_tournaments_val.csv
 
 # Python
 __pycache__/

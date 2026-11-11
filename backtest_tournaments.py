@@ -29,8 +29,8 @@ import numpy as np
 import pandas as pd
 
 from build_model_dataset import PLAYER_COLS
-from common import (LAYOFF_CAP, MODELS_DIR, REST_CAP, START_RATING, VAL_END_YEAR, expected, load_state,
-                    make_features)
+from common import (LAYOFF_CAP, MODELS_DIR, REST_CAP, START_RATING, TRAIN_END_YEAR, VAL_END_YEAR,
+                    CalibratedModel, expected, load_state, make_features)
 from simulate_tournament import BYE, round_names, simulate
 
 # ------------------------- CONFIGURACIÓN -------------------------
@@ -114,27 +114,33 @@ def long_profiles(m):
     return long.sort_values(["tourney_date", "round_order"], kind="stable")
 
 
-def main():
-    ap = argparse.ArgumentParser(description="Backtest del simulador de torneos sobre los torneos de test")
-    ap.add_argument("--show", help="mostrar el detalle de un torneo (texto del nombre, p. ej. 'Roland Garros')")
-    ap.add_argument("--year", type=int, help="año del torneo de --show")
-    ap.add_argument("--sims", type=int, default=SIMS)
-    args = ap.parse_args()
+def load_model(split):
+    """
+    test -> modelo entrenado con 2005-2023 (calibrado en validación)
+    val  -> modelo entrenado solo con 2005-2021 y sin calibrar
+    Devuelve (modelo base sin calibrar, a de calibración por partido, features, nombre).
+    """
+    path = MODELS_DIR / ("model_trainval.joblib" if split == "test" else "model_train.joblib")
+    bundle = joblib.load(path)
+    model = bundle["model"]
+    if isinstance(model, CalibratedModel):
+        return model.base, model.a, bundle["features"], bundle["name"]
+    return model, 1.0, bundle["features"], bundle["name"]
 
-    bundle = joblib.load(MODELS_DIR / "model_trainval.joblib")
-    model, features = bundle["model"], bundle["features"]
-    prior = load_state("serve")["prior"]
 
+def prepare(split, show=None, year=None):
+    """Torneos del periodo, estado previo de cada jugador y cara a cara antes de cada torneo."""
     raw = pd.read_csv("atp_matches.csv", low_memory=False)
     raw["tourney_date"] = pd.to_datetime(raw["tourney_date"].astype(str), format="%Y%m%d")
-    raw = raw[(raw["tourney_date"].dt.year > VAL_END_YEAR) & ~raw["round"].isin(["Q1", "Q2", "Q3", "BR"])
-              & (raw["tourney_level"] != "D")]
-    if args.show:
-        raw = raw[raw["tourney_name"].str.contains(args.show, case=False, regex=False)]
-        if args.year:
-            raw = raw[raw["tourney_date"].dt.year == args.year]
+    yr = raw["tourney_date"].dt.year
+    period = (yr > VAL_END_YEAR) if split == "test" else ((yr > TRAIN_END_YEAR) & (yr <= VAL_END_YEAR))
+    raw = raw[period & ~raw["round"].isin(["Q1", "Q2", "Q3", "BR"]) & (raw["tourney_level"] != "D")]
+    if show:
+        raw = raw[raw["tourney_name"].str.contains(show, case=False, regex=False)]
+        if year:
+            raw = raw[raw["tourney_date"].dt.year == year]
         if raw.empty:
-            raise SystemExit(f"No hay ningún torneo de test (2024+) que contenga '{args.show}'.")
+            raise SystemExit(f"No hay ningún torneo de {split} que contenga '{show}'.")
 
     m = pd.read_csv("atp_matches_serve.csv", low_memory=False, parse_dates=["tourney_date"])
     long = long_profiles(m)
@@ -142,7 +148,6 @@ def main():
     by_player = {p: g for p, g in long.groupby("id")}
 
     targets = set(raw["tourney_id"])
-    # ---------- cara a cara justo antes de cada torneo ----------
     players_of = {t: set(g["winner_id"]) | set(g["loser_id"]) for t, g in raw.groupby("tourney_id")}
     h2h, snap = {}, {}
     tids, W, L = m["tourney_id"].to_numpy(), m["winner_id"].to_numpy(), m["loser_id"].to_numpy()
@@ -152,11 +157,21 @@ def main():
             ps = players_of[t]
             snap[t] = {(a, b): h2h[(a, b)] for a in ps for b in ps if (a, b) in h2h}
         h2h[(W[i], L[i])] = h2h.get((W[i], L[i]), 0) + 1
+    return raw, first_in_tourney, by_player, snap
 
-    rng = np.random.default_rng(SEED)
-    results, cells, skipped = [], [], []
 
-    for tid, g in raw.groupby("tourney_id", sort=False):
+def run_backtest(split, a_values, sims=SIMS, show=None, year=None):
+    """
+    Simula todos los torneos del periodo con cada valor de calibración a (p' = σ(a·logit p), aplicado
+    a las probabilidades SIN calibrar del modelo). Devuelve ({a: (resultados, celdas)}, descartados, info).
+    """
+    base, a_match, features, model_name = load_model(split)
+    prior = load_state("serve")["prior"]
+    raw, first_in_tourney, by_player, snap = prepare(split, show, year)
+
+    out = {a: ([], []) for a in a_values}
+    skipped = []
+    for t_index, (tid, g) in enumerate(raw.groupby("tourney_id", sort=False)):
         info = g.iloc[0]
         try:
             slots_ids, rounds, reached = build_bracket(list(zip(g["round"], g["winner_id"], g["loser_id"])))
@@ -201,65 +216,163 @@ def main():
         A["h2h"] = np.array([hs.get((a, b), 0) for a, b in pairs], dtype=float)
         B["h2h"] = np.array([hs.get((b, a), 0) for a, b in pairs], dtype=float)
         X = pd.DataFrame(make_features(A, B, np.full(len(pairs), best_of)))[features]
-        p_model = model.predict(X)
+        p_raw = base.predict(X)
         p_elo = expected(A["elo"], B["elo"])
 
         n = len(players)
         slots = np.array([BYE if p == BYE else pos[p] for p in slots_ids])
-        reach = {}
-        for label, pp in (("model", p_model), ("elo", p_elo)):
-            prob = np.full((n, n), 0.5)
-            ia = np.array([pos[a] for a, _ in pairs])
-            ib = np.array([pos[b] for _, b in pairs])
-            prob[ia, ib] = pp
-            reach[label] = simulate(prob, slots, args.sims, rng) / args.sims
+        ia = np.array([pos[a] for a, _ in pairs])
+        ib = np.array([pos[b] for _, b in pairs])
+        # misma semilla por torneo para todos los valores de a: así las diferencias entre
+        # calibraciones no son ruido de la simulación
+        seed = SEED + t_index
 
+        def reach_for(pp):
+            prob = np.full((n, n), 0.5)
+            prob[ia, ib] = pp
+            return simulate(prob, slots, sims, np.random.default_rng(seed)) / sims
+
+        reach_elo = reach_for(p_elo)
         K = len(rounds)
         actual = np.zeros((n, K + 1))
         for p in players:
             actual[pos[p], :reached.get(p, 0) + 1] = 1
         champ = next(p for p in players if reached.get(p) == K)
-
         level = LEVELS.get(info["tourney_level"], "Otros")
-        fav = players[int(np.argmax(reach["model"][:, K]))]
-        results.append({
-            "tourney_id": tid, "tourney_name": info["tourney_name"], "date": date.date(), "level": level,
-            "surface": surface, "players": n, "draw": len(slots_ids), "fallback_profiles": n_fallback,
-            "champion": champ, "p_champ_model": reach["model"][pos[champ], K],
-            "p_champ_elo": reach["elo"][pos[champ], K], "favorite": fav,
-            # puesto del campeón en la lista de favoritos del modelo (1 = favorito)
-            "champ_rank_model": int(1 + (reach["model"][:, K] > reach["model"][pos[champ], K]).sum()),
-            "p_fav_model": reach["model"][pos[fav], K], "fav_won": int(fav == champ),
-        })
-        # celdas jugador x ronda (contadas desde el final: 0 = campeón, 1 = final, 2 = semis, 3 = cuartos)
-        for j in range(1, K + 1):
-            for i in range(n):
-                cells.append((K - j, level, reach["model"][i, j], reach["elo"][i, j], actual[i, j]))
 
-        if args.show:
-            names = {}
-            for side in ("winner", "loser"):
-                names.update(dict(zip(g[f"{side}_id"], g[f"{side}_name"])))
-            rn = round_names(len(slots_ids))
-            t = pd.DataFrame(reach["model"][:, 1:] * 100, columns=rn[1:])
-            t.insert(0, "Jugador", [names[p] for p in players])
-            t["Elo: campeón"] = reach["elo"][:, K] * 100
-            t["Real"] = [rn[reached.get(p, 0)] for p in players]
-            t = t.sort_values("Campeón", ascending=False).reset_index(drop=True)
-            t.index += 1
-            print(f"\n{info['tourney_name']} {date.date()} | {surface}, al mejor de {best_of} | {n} jugadores")
-            print("Probabilidad (%) que daba el modelo ANTES del torneo, y ronda a la que llegó cada uno:\n")
-            with pd.option_context("display.width", 220, "display.max_columns", 30):
-                print(t.head(20).round(1).to_string())
-            print(f"\nCampeón: {names[champ]} — el modelo le daba {reach['model'][pos[champ], K] * 100:.1f} % "
-                  f"(solo Elo: {reach['elo'][pos[champ], K] * 100:.1f} %)")
+        for a in a_values:
+            reach_m = reach_for(CalibratedModel.apply(p_raw, a))
+            fav = players[int(np.argmax(reach_m[:, K]))]
+            out[a][0].append({
+                "tourney_id": tid, "tourney_name": info["tourney_name"], "date": date.date(), "level": level,
+                "surface": surface, "players": n, "draw": len(slots_ids), "fallback_profiles": n_fallback,
+                "champion": champ, "p_champ_model": reach_m[pos[champ], K],
+                "p_champ_elo": reach_elo[pos[champ], K], "favorite": fav,
+                # puesto del campeón en la lista de favoritos del modelo (1 = favorito)
+                "champ_rank_model": int(1 + (reach_m[:, K] > reach_m[pos[champ], K]).sum()),
+                "p_fav_model": reach_m[pos[fav], K], "fav_won": int(fav == champ),
+            })
+            # celdas jugador x ronda (contadas desde el final: 0 = campeón, 1 = final, 2 = semis, 3 = cuartos)
+            for j in range(1, K + 1):
+                for i in range(n):
+                    out[a][1].append((K - j, level, reach_m[i, j], reach_elo[i, j], actual[i, j]))
 
+            if show:
+                names = {}
+                for side in ("winner", "loser"):
+                    names.update(dict(zip(g[f"{side}_id"], g[f"{side}_name"])))
+                rn = round_names(len(slots_ids))
+                t = pd.DataFrame(reach_m[:, 1:] * 100, columns=rn[1:])
+                t.insert(0, "Jugador", [names[p] for p in players])
+                t["Elo: campeón"] = reach_elo[:, K] * 100
+                t["Real"] = [rn[reached.get(p, 0)] for p in players]
+                t = t.sort_values("Campeón", ascending=False).reset_index(drop=True)
+                t.index += 1
+                print(f"\n{info['tourney_name']} {date.date()} | {surface}, al mejor de {best_of} | {n} jugadores"
+                      f" | calibración a = {a:.3f}")
+                print("Probabilidad (%) que daba el modelo ANTES del torneo, y ronda a la que llegó cada uno:\n")
+                with pd.option_context("display.width", 220, "display.max_columns", 30):
+                    print(t.head(20).round(1).to_string())
+                print(f"\nCampeón: {names[champ]} — el modelo le daba {reach_m[pos[champ], K] * 100:.1f} % "
+                      f"(solo Elo: {reach_elo[pos[champ], K] * 100:.1f} %)")
+
+    info = {"a_match": a_match, "model_name": model_name, "sims": sims}
+    return out, skipped, info
+
+
+def summary(res, cells):
+    """Métricas principales para comparar valores de calibración."""
+    eps = 1e-4
+    c = pd.DataFrame(cells, columns=["from_end", "level", "p_model", "p_elo", "actual"])
+    row = {"ll_champ": float(-np.log(res["p_champ_model"].clip(lower=eps)).mean())}
+    for fe, name in [(0, "champ"), (1, "final"), (2, "sf")]:
+        cc = c[c["from_end"] == fe]
+        row[f"brier_{name}"] = float(((cc["p_model"] - cc["actual"]) ** 2).mean())
+    top = c[(c["from_end"] == 0) & (c["p_model"] >= 0.35)]
+    row["top_n"] = len(top)
+    row["top_pred"] = float(top["p_model"].mean()) if len(top) else float("nan")
+    row["top_real"] = float(top["actual"].mean()) if len(top) else float("nan")
+    return row
+
+
+def tune(a_grid, sims):
+    """Elige la calibración a nivel de torneo con los torneos de VALIDACIÓN (2022-2023)."""
+    out, skipped, info = run_backtest("val", a_grid, sims)
+    lines = []
+
+    def say(text=""):
+        print(text)
+        lines.append(str(text))
+
+    n_t = len(out[a_grid[0]][0])
+    say(f"Calibración para torneos elegida con los torneos de VALIDACIÓN ({TRAIN_END_YEAR + 1}-{VAL_END_YEAR})")
+    say(f"Modelo entrenado solo con 2005-{TRAIN_END_YEAR}, sin calibrar | {n_t} torneos | {sims:,} simulaciones")
+    say(f"Calibración por partido que usa el modelo final (ajustada partido a partido en validación): "
+        f"a = {load_model('test')[1]:.3f}\n")
+    say(f"  {'a':>6s} {'log-loss campeón':>17s} {'Brier campeón':>14s} {'Brier final':>12s} {'Brier semis':>12s}"
+        f"   favoritos con >= 35 %: casos / predicho / real")
+    rows = {}
+    for a in a_grid:
+        s = summary(pd.DataFrame(out[a][0]), out[a][1])
+        rows[a] = s
+        say(f"  {a:6.3f} {s['ll_champ']:17.4f} {s['brier_champ']:14.5f} {s['brier_final']:12.5f} {s['brier_sf']:12.5f}"
+            f"   {s['top_n']:5d} / {s['top_pred'] * 100:5.1f} % / {s['top_real'] * 100:5.1f} %")
+    best = min(a_grid, key=lambda a: rows[a]["ll_champ"])
+    say(f"\n  Mejor a para torneos (menor log-loss del campeón): {best:.3f}")
+    with open("backtest_tune_val.txt", "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines))
+    print("Guardado: backtest_tune_val.txt")
+    return best
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Backtest del simulador de torneos")
+    ap.add_argument("--split", choices=["test", "val"], default="test",
+                    help="test = 2024 en adelante (modelo 2005-2023); val = 2022-2023 (modelo 2005-2021)")
+    ap.add_argument("--a", type=float, help="calibración para torneos (por defecto, la de partidos)")
+    ap.add_argument("--compare-a", type=float, help="comparar la calibración principal con este otro valor de a")
+    ap.add_argument("--tune-a", action="store_true", help="elegir la calibración de torneos en validación")
+    ap.add_argument("--show", help="mostrar el detalle de un torneo (texto del nombre, p. ej. 'Roland Garros')")
+    ap.add_argument("--year", type=int, help="año del torneo de --show")
+    ap.add_argument("--sims", type=int, default=SIMS)
+    args = ap.parse_args()
+
+    if args.tune_a:
+        tune([round(float(a), 3) for a in np.arange(0.60, 1.0001, 0.05)], args.sims)
+        return
+
+    _, a_match, _, _ = load_model(args.split)
+    a_main = args.a if args.a is not None else a_match
+    a_values = [a_main] + ([args.compare_a] if args.compare_a is not None else [])
+    out, skipped, info = run_backtest(args.split, a_values, args.sims, args.show, args.year)
     if args.show:
         return
-    report(pd.DataFrame(results), cells, skipped)
+
+    if args.compare_a is not None:
+        print(f"Comparación en {args.split}: a = {a_main:.3f} frente a a = {args.compare_a:.3f}\n")
+        res_a, res_b = pd.DataFrame(out[a_main][0]), pd.DataFrame(out[args.compare_a][0])
+        for a, r, cl in [(a_main, res_a, out[a_main][1]), (args.compare_a, res_b, out[args.compare_a][1])]:
+            s = summary(r, cl)
+            print(f"  a = {a:.3f}: log-loss campeón {s['ll_champ']:.4f} | Brier campeón {s['brier_champ']:.5f} "
+                  f"final {s['brier_final']:.5f} semis {s['brier_sf']:.5f} | favoritos >= 35 %: "
+                  f"{s['top_n']} casos, pred. {s['top_pred'] * 100:.1f} % / real {s['top_real'] * 100:.1f} %")
+        diff = np.log(res_b["p_champ_model"].clip(lower=1e-4)) - np.log(res_a["p_champ_model"].clip(lower=1e-4))
+        half = 1.96 * diff.std(ddof=1) / math.sqrt(len(diff))
+        print(f"\n  Mejora de a = {args.compare_a:.3f} frente a a = {a_main:.3f} (log-loss del campeón, > 0 = mejor): "
+              f"{diff.mean():+.4f} [{diff.mean() - half:+.4f}, {diff.mean() + half:+.4f}] IC 95 %")
+        return
+
+    period = "2024 en adelante" if args.split == "test" else f"{TRAIN_END_YEAR + 1}-{VAL_END_YEAR}"
+    trained = f"2005-{VAL_END_YEAR}" if args.split == "test" else f"2005-{TRAIN_END_YEAR}"
+    header = (f"Torneos simulados: {{n}} ({period}) | descartados: {len(skipped)} | "
+              f"{args.sims:,} simulaciones por torneo\n"
+              f"Modelo: entrenado solo con {trained} (no ha visto ningún torneo de este informe) | "
+              f"calibración a = {a_main:.3f}\n")
+    suffix = "" if args.split == "test" else "_val"
+    report(pd.DataFrame(out[a_main][0]), out[a_main][1], skipped, header, suffix)
 
 
-def report(res, cells, skipped):
+def report(res, cells, skipped, header, suffix=""):
     lines = []
 
     def say(text=""):
@@ -267,8 +380,7 @@ def report(res, cells, skipped):
         lines.append(str(text))
 
     eps = 1e-4
-    say(f"Torneos simulados: {len(res)} (2024 en adelante) | descartados: {len(skipped)} | {SIMS:,} simulaciones por torneo")
-    say("Modelo: entrenado y calibrado solo con 2005-2023 (no ha visto ningún torneo de este informe)\n")
+    say(header.format(n=len(res)))
 
     # ---------- 1) Probabilidad dada al campeón real ----------
     say("1) PROBABILIDAD QUE SE LE DABA AL CAMPEÓN REAL (antes del torneo)")
@@ -338,9 +450,9 @@ def report(res, cells, skipped):
     fb = int(res["fallback_profiles"].sum())
     say(f"\nJugadores que solo jugaron walkovers (estado tomado de su torneo anterior): {fb}")
 
-    res.to_csv("backtest_tournaments.csv", index=False)
-    say("\nGuardado: backtest_tournaments.csv y backtest_report.txt")
-    with open("backtest_report.txt", "w", encoding="utf-8") as fh:
+    res.to_csv(f"backtest_tournaments{suffix}.csv", index=False)
+    say(f"\nGuardado: backtest_tournaments{suffix}.csv y backtest_report{suffix}.txt")
+    with open(f"backtest_report{suffix}.txt", "w", encoding="utf-8") as fh:
         fh.write("\n".join(lines))
 
 
