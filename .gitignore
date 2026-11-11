@@ -16,3 +16,7 @@ predictions_best.csv
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
+
+# Estado y modelos generados por el pipeline
+state/
+models/

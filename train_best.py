@@ -1,146 +1,160 @@
 """
-Entrena varios modelos, elige el que MÁS ACIERTA en validación, lo reentrena con
-train + val y lo examina UNA sola vez en test.
+Entrena varios modelos, elige el de MENOR LOG-LOSS en validación, lo reentrena con
+train + val y lo examina UNA sola vez en test. Después lo reentrena con TODOS los
+datos y lo guarda para predecir partidos y torneos futuros.
+
+Por qué log-loss y no acierto: el acierto solo mira si p > 0.5, es más ruidoso y no
+premia que las probabilidades sean correctas. Para simular torneos lo que importa es
+que un 70 % signifique de verdad un 70 %.
 
 Entrada : model_dataset.csv
-Salida  : predictions_best.csv    (una fila por partido de test)
-          train_best_report.txt   (el informe que se imprime)
+Salida  : predictions_best.csv     (una fila por partido de test)
+          train_best_report.txt    (el informe que se imprime)
+          models/best_model.joblib (modelo final entrenado con todos los datos)
 
-Ejecutar:  python train_best.py        (necesita scikit-learn; tarda 1-3 minutos)
+Ejecutar:  python train_best.py        (tarda unos minutos)
 """
+import joblib
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import HistGradientBoostingClassifier
-from sklearn.linear_model import LogisticRegression
-from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import StandardScaler
+
+from common import (FEATURES, MODELS_DIR, CalibratedModel, EnsembleModel, SymmetricModel, accuracy,
+                    brier, calibration_table, logloss)
 
 # ------------------------- CONFIGURACIÓN -------------------------
 INPUT = "model_dataset.csv"
-FEATURES = ["elo_diff", "elo_surf_diff", "log_rank_diff", "age_diff", "ht_diff", "lefty_diff",
-            "exp_diff", "form_diff", "rest_diff", "games14_diff", "h2h_diff",
-            "spw_diff", "rpw_diff", "ace_diff", "df_diff", "fin_diff"]
 # candidatos de árboles: (profundidad, velocidad de aprendizaje, nº de árboles, mínimo por hoja)
 HGB_GRID = [(3, 0.05, 300, 200), (4, 0.03, 400, 200), (6, 0.03, 300, 100), (8, 0.02, 400, 100)]
 # -----------------------------------------------------------------
 
-lines = []
+
+def fit_rows(df):
+    """Para ENTRENAR se quitan las retiradas (resultado poco informativo); para evaluar se mantienen."""
+    return df[df["is_retirement"] == 0]
 
 
-def say(text=""):
-    print(text)
-    lines.append(str(text))
+def build_candidates():
+    logreg = SymmetricModel("LogReg", "logreg")
+    trees = [SymmetricModel(f"Árboles prof={g[0]} lr={g[1]} n={g[2]} hoja={g[3]}", "hgb", g) for g in HGB_GRID]
+    return logreg, trees
 
 
-d = pd.read_csv(INPUT, parse_dates=["match_date"])
-train, val, test = (d[d["split"] == s].copy() for s in ["train", "val", "test"])
+def main():
+    lines = []
+
+    def say(text=""):
+        print(text)
+        lines.append(str(text))
+
+    d = pd.read_csv(INPUT, parse_dates=["match_date"])
+    train, val, test = (d[d["split"] == s].copy() for s in ["train", "val", "test"])
+
+    # ---------- 1) Probar candidatos: entrenar con train, medir en val ----------
+    say(f"Entrenamiento: {len(train):,} | Validación: {len(val):,} | Test: {len(test):,}")
+    say(f"Características ({len(FEATURES)}): {', '.join(FEATURES)}\n")
+    say("PASO 1 - Candidatos entrenados con train y medidos en validación (2022-2023)")
+    yv = val["target"].to_numpy()
+    say(f"  {'Elo (fórmula, sin entrenar)':38s} acierto={accuracy(yv, val['elo_prob_A']):.4f}  "
+        f"log-loss={logloss(yv, val['elo_prob_A']):.4f}")
+
+    logreg, trees = build_candidates()
+    preds, rows = {}, []
+    for c in [logreg] + trees:
+        c.fit(train)
+        p = c.predict(val)
+        preds[c.name] = p
+        rows.append((c.name, accuracy(yv, p), logloss(yv, p)))
+        say(f"  {c.name:38s} acierto={rows[-1][1]:.4f}  log-loss={rows[-1][2]:.4f}")
+
+    ens_name = "Conjunto (LogReg + media de árboles)"
+    p_ens = 0.5 * preds["LogReg"] + 0.5 * np.mean([preds[t.name] for t in trees], axis=0)
+    rows.append((ens_name, accuracy(yv, p_ens), logloss(yv, p_ens)))
+    say(f"  {ens_name:38s} acierto={rows[-1][1]:.4f}  log-loss={rows[-1][2]:.4f}")
+
+    best_name = min(rows, key=lambda r: r[2])[0]
+    se = 100 * np.sqrt(0.65 * 0.35 / len(val))
+    say(f"\n  Elegido por menor log-loss en validación: {best_name}")
+    say(f"  (El acierto en validación tiene un margen de error de ±{se:.2f} puntos: diferencias")
+    say("   menores que eso entre candidatos son ruido, no mejoras reales.)")
+
+    # calibración: cuánto hay que suavizar (a < 1) o afilar (a > 1) las probabilidades del elegido
+    p_best = p_ens if best_name == ens_name else preds[best_name]
+    calib_a = CalibratedModel.fit_scale(yv, p_best)
+    say(f"\n  Calibración ajustada en validación: a = {calib_a:.3f} "
+        f"(log-loss {logloss(yv, p_best):.4f} -> {logloss(yv, CalibratedModel.apply(p_best, calib_a)):.4f})")
+
+    def make_best():
+        lr, tr = build_candidates()
+        if best_name == ens_name:
+            return EnsembleModel(ens_name, [lr, EnsembleModel("Árboles", tr)])
+        return next(c for c in [lr] + tr if c.name == best_name)
+
+    # ---------- 2) Reentrenar con train + val y examinar en test (una sola vez) ----------
+    say("\nPASO 2 - Reentrenar con train + val (2005-2023) y examinar en test (2024 en adelante)")
+    model = make_best().fit(fit_rows(pd.concat([train, val])))
+    pt_raw = model.predict(test)
+    pt = CalibratedModel.apply(pt_raw, calib_a)
+    yt = test["target"].to_numpy()
+    no_ret = (test["is_retirement"] == 0).to_numpy()
+
+    say(f"  {'':34s} {'partidos':>9s} {'acierto':>8s} {'log-loss':>9s} {'Brier':>7s}")
+    for label, mk, p in [("Modelo calibrado - todos", np.ones(len(yt), bool), pt),
+                         ("Modelo calibrado - sin retiradas", no_ret, pt),
+                         ("Modelo sin calibrar - todos", np.ones(len(yt), bool), pt_raw),
+                         ("Modelo sin calibrar - sin retiradas", no_ret, pt_raw),
+                         ("Elo fórmula - todos", np.ones(len(yt), bool), test["elo_prob_A"].to_numpy())]:
+        say(f"  {label:34s} {mk.sum():9d} {accuracy(yt[mk], p[mk]):8.4f} {logloss(yt[mk], p[mk]):9.4f} "
+            f"{brier(yt[mk], p[mk]):7.4f}")
+    say(f"  Margen de error del acierto en test: ±{100 * np.sqrt(0.65 * 0.35 / len(test)):.2f} puntos")
+
+    # ---------- 3) Calibración ----------
+    say("\nPASO 3 - Calibración en test (modelo calibrado): ¿cuando el favorito tiene un X %, gana un X %?")
+    say(f"  {'prob. favorito':>15s} {'partidos':>9s} {'predicho':>9s} {'real':>7s} {'dif.':>6s}")
+    for a, b, n, pred, real in calibration_table(yt, pt):
+        say(f"  {f'{a:.2f}-{b:.2f}':>15s} {n:9d} {pred * 100:8.1f}% {real * 100:6.1f}% {100 * (real - pred):+5.1f}")
+
+    # ---------- 4) Acierto según lo seguro que está el modelo ----------
+    conf = np.maximum(pt, 1 - pt)
+    hit = (pt > 0.5) == (yt == 1)
+    say("\nPASO 4 - Acierto según la confianza del modelo (test)")
+    say(f"  {'confianza':>10s} {'partidos':>9s} {'% del total':>12s} {'acierto':>9s}")
+    for th in [0.50, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85]:
+        mk = conf >= th
+        say(f"  {'>= ' + format(th, '.2f'):>10s} {mk.sum():9d} {mk.mean() * 100:11.1f}% {hit[mk].mean() * 100:8.1f}%")
+
+    grp = np.where(test["level_source"] == "main", "Circuito principal", "Challenger")
+    say("\nAcierto por nivel y superficie (test):")
+    for g in ["Circuito principal", "Challenger"]:
+        mk = grp == g
+        say(f"  {g:20s} partidos={mk.sum():6d}  acierto={hit[mk].mean() * 100:.1f}%  "
+            f"log-loss={logloss(yt[mk], pt[mk]):.4f}")
+    gs = (test["tourney_level"] == "G").to_numpy()
+    say(f"  {'Grand Slams':20s} partidos={gs.sum():6d}  acierto={hit[gs].mean() * 100:.1f}%")
+    for s in ["Hard", "Clay", "Grass"]:
+        mk = (test["surface"] == s).to_numpy()
+        say(f"  {s:20s} partidos={mk.sum():6d}  acierto={hit[mk].mean() * 100:.1f}%")
+
+    test["prob_A"] = pt.round(4)
+    test["confidence"] = conf.round(4)
+    test["hit"] = hit.astype(int)
+    test["pred_winner"] = np.where(pt > 0.5, test["player_A_name"], test["player_B_name"])
+    test["actual_winner"] = np.where(yt == 1, test["player_A_name"], test["player_B_name"])
+    test[["match_date", "tourney_name", "level_source", "surface", "round", "player_A_name", "player_B_name",
+          "prob_A", "pred_winner", "actual_winner", "hit", "confidence", "is_retirement"]] \
+        .to_csv("predictions_best.csv", index=False)
+
+    # ---------- 5) Modelo final con TODOS los datos (para predecir el futuro) ----------
+    say("\nPASO 5 - Reentrenar con todos los datos (2005 en adelante) y guardar el modelo final")
+    final = CalibratedModel(make_best(), calib_a).fit(fit_rows(d))
+    MODELS_DIR.mkdir(exist_ok=True)
+    joblib.dump({"model": final, "features": FEATURES, "name": final.name,
+                 "trained_until": str(d["match_date"].max().date())}, MODELS_DIR / "best_model.joblib")
+    say(f"  Guardado: models/best_model.joblib ({final.name})")
+
+    say("\nGuardado: predictions_best.csv y train_best_report.txt")
+    with open("train_best_report.txt", "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines))
 
 
-def flip(x):
-    """Copia del partido con A y B intercambiados (así el modelo no depende de quién es A)."""
-    f = x.copy()
-    f[FEATURES] = -f[FEATURES]
-    f["target"] = 1 - f["target"]
-    return f
-
-
-def logloss(y, p):
-    p = np.clip(p, 1e-6, 1 - 1e-6)
-    return -(y * np.log(p) + (1 - y) * np.log(1 - p)).mean()
-
-
-def acc(y, p):
-    return ((p > 0.5) == (y == 1)).mean()
-
-
-class Candidate:
-    def __init__(self, name, kind, params=None):
-        self.name, self.kind, self.params = name, kind, params
-
-    def fit(self, df):
-        if self.kind == "logreg":
-            self.model = make_pipeline(StandardScaler(with_mean=False),
-                                       LogisticRegression(fit_intercept=False, max_iter=2000))
-            self.model.fit(df[FEATURES], df["target"])
-        else:
-            depth, lr, it, leaf = self.params
-            both = pd.concat([df, flip(df)])
-            self.model = HistGradientBoostingClassifier(max_depth=depth, learning_rate=lr, max_iter=it,
-                                                        min_samples_leaf=leaf, l2_regularization=5.0, random_state=0)
-            self.model.fit(both[FEATURES], both["target"])
-        return self
-
-    def predict(self, df):
-        X = df[FEATURES]
-        # promedio simétrico: P(A gana) = media de [P(A) , 1 - P(B visto como A)]
-        return (self.model.predict_proba(X)[:, 1] + 1 - self.model.predict_proba(-X)[:, 1]) / 2
-
-
-candidates = [Candidate("LogReg", "logreg")]
-candidates += [Candidate(f"Árboles prof={g[0]} lr={g[1]} n={g[2]} hoja={g[3]}", "hgb", g) for g in HGB_GRID]
-
-# ---------- 1) Probar candidatos: entrenar con train, medir en val ----------
-say(f"Entrenamiento: {len(train):,} | Validación: {len(val):,} | Test: {len(test):,}\n")
-say("PASO 1 - Candidatos entrenados con train y medidos en validación (2022-2023)")
-yv = val["target"].to_numpy()
-val_preds, rows = {}, []
-for c in candidates:
-    c.fit(train)
-    p = c.predict(val)
-    val_preds[c.name] = p
-    rows.append((c.name, acc(yv, p), logloss(yv, p)))
-    say(f"  {c.name:38s} acierto={acc(yv, p):.4f}  log-loss={logloss(yv, p):.4f}")
-
-# el conjunto: media de la regresión y de los árboles
-tree_names = [c.name for c in candidates if c.kind == "hgb"]
-ens = np.mean([val_preds["LogReg"], np.mean([val_preds[n] for n in tree_names], axis=0)], axis=0)
-rows.append(("Conjunto (LogReg + media de árboles)", acc(yv, ens), logloss(yv, ens)))
-say(f"  {'Conjunto (LogReg + media de árboles)':38s} acierto={acc(yv, ens):.4f}  log-loss={logloss(yv, ens):.4f}")
-
-best_name = max(rows, key=lambda r: r[1])[0]
-se = 100 * np.sqrt(0.65 * 0.35 / len(val))
-say(f"\n  Elegido por mayor acierto en validación: {best_name}")
-say(f"  Ojo: el acierto en validación tiene un margen de error de ±{se:.2f} puntos. Diferencias menores")
-say("  que eso entre candidatos son ruido, no mejoras reales.")
-
-# ---------- 2) Reentrenar con train + val y examinar en test (una sola vez) ----------
-say("\nPASO 2 - Reentrenar con train + val (2005-2023) y examinar en test (2024 en adelante)")
-trainval = pd.concat([train, val])
-final = []
-if best_name.startswith("Conjunto"):
-    final = [c.fit(trainval) for c in candidates if c.name == "LogReg" or c.kind == "hgb"]
-    p_logreg = final[0].predict(test)
-    p_trees = np.mean([c.predict(test) for c in final[1:]], axis=0)
-    pt = np.mean([p_logreg, p_trees], axis=0)
-else:
-    c = next(c for c in candidates if c.name == best_name).fit(trainval)
-    pt = c.predict(test)
-
-yt = test["target"].to_numpy()
-say(f"  TEST: acierto={acc(yt, pt):.4f}  log-loss={logloss(yt, pt):.4f}  Brier={((pt - yt) ** 2).mean():.4f}")
-say(f"  Margen de error del acierto en test: ±{100 * np.sqrt(0.65 * 0.35 / len(test)):.2f} puntos")
-
-# ---------- 3) Acierto según lo seguro que está el modelo ----------
-conf = np.maximum(pt, 1 - pt)
-hit = (pt > 0.5) == (yt == 1)
-say("\nPASO 3 - Acierto según la confianza del modelo (test)")
-say(f"  {'confianza':>10s} {'partidos':>9s} {'% del total':>12s} {'acierto':>9s}")
-for th in [0.50, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85]:
-    mk = conf >= th
-    say(f"  {'>= ' + format(th, '.2f'):>10s} {mk.sum():9d} {mk.mean() * 100:11.1f}% {hit[mk].mean() * 100:8.1f}%")
-
-test["prob_A"] = pt.round(4)
-test["confidence"] = conf.round(4)
-test["hit"] = hit.astype(int)
-test["pred_winner"] = np.where(pt > 0.5, test["player_A_name"], test["player_B_name"])
-test["actual_winner"] = np.where(yt == 1, test["player_A_name"], test["player_B_name"])
-grp = np.where(test["level_source"] == "main", "Circuito principal", "Challenger")
-say("\nAcierto por nivel (test):")
-for g in ["Circuito principal", "Challenger"]:
-    mk = grp == g
-    say(f"  {g:20s} partidos={mk.sum():6d}  acierto={hit[mk].mean() * 100:.1f}%")
-
-test[["match_date", "tourney_name", "level_source", "surface", "round", "player_A_name", "player_B_name",
-      "prob_A", "pred_winner", "actual_winner", "hit", "confidence"]].to_csv("predictions_best.csv", index=False)
-say("\nGuardado: predictions_best.csv y train_best_report.txt")
-open("train_best_report.txt", "w", encoding="utf-8").write("\n".join(lines))
+if __name__ == "__main__":
+    main()
