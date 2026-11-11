@@ -1,0 +1,19 @@
+# Cuadro de ejemplo (16 posiciones). Un jugador por línea, en el orden del cuadro:
+# las líneas 1-2 juegan entre sí, las 3-4 también, etc. Se puede poner BYE.
+# Simular:  python simulate_tournament.py --draw draws/ejemplo_16_clay.txt --surface Clay
+Jannik Sinner
+Learner Tien
+Casper Ruud
+Jakub Mensik
+Alexander Zverev
+Tommy Paul
+Lorenzo Musetti
+Jack Draper
+Arthur Fils
+Taylor Fritz
+Daniil Medvedev
+Rafael Jodar
+Novak Djokovic
+Alex De Minaur
+Felix Auger Aliassime
+Carlos Alcaraz

@@ -1,33 +1,61 @@
-Entrenamiento: 122,696 | Validación: 16,583 | Test: 22,303
+Entrenamiento: 122,696 | Validación: 17,157 | Test: 23,134
+Características (18): elo_diff, elo_surf_diff, elo_diff_bo5, log_rank_diff, age_diff, ht_diff, lefty_diff, exp_diff, form_diff, rest_diff, layoff_diff, games14_diff, h2h_diff, spw_diff, rpw_diff, ace_diff, df_diff, fin_diff
 
 PASO 1 - Candidatos entrenados con train y medidos en validación (2022-2023)
-  LogReg                                 acierto=0.6460  log-loss=0.6264
-  Árboles prof=3 lr=0.05 n=300 hoja=200  acierto=0.6487  log-loss=0.6257
-  Árboles prof=4 lr=0.03 n=400 hoja=200  acierto=0.6484  log-loss=0.6255
-  Árboles prof=6 lr=0.03 n=300 hoja=100  acierto=0.6481  log-loss=0.6254
-  Árboles prof=8 lr=0.02 n=400 hoja=100  acierto=0.6491  log-loss=0.6256
-  Conjunto (LogReg + media de árboles)   acierto=0.6472  log-loss=0.6252
+  Elo (fórmula, sin entrenar)            acierto=0.6291  log-loss=0.6429
+  LogReg                                 acierto=0.6433  log-loss=0.6298
+  Árboles prof=3 lr=0.05 n=300 hoja=200  acierto=0.6445  log-loss=0.6292
+  Árboles prof=4 lr=0.03 n=400 hoja=200  acierto=0.6450  log-loss=0.6289
+  Árboles prof=6 lr=0.03 n=300 hoja=100  acierto=0.6434  log-loss=0.6288
+  Árboles prof=8 lr=0.02 n=400 hoja=100  acierto=0.6441  log-loss=0.6290
+  Conjunto (LogReg + media de árboles)   acierto=0.6442  log-loss=0.6287
 
-  Elegido por mayor acierto en validación: Árboles prof=8 lr=0.02 n=400 hoja=100
-  Ojo: el acierto en validación tiene un margen de error de ±0.37 puntos. Diferencias menores
-  que eso entre candidatos son ruido, no mejoras reales.
+  Elegido por menor log-loss en validación: Conjunto (LogReg + media de árboles)
+  (El acierto en validación tiene un margen de error de ±0.36 puntos: diferencias
+   menores que eso entre candidatos son ruido, no mejoras reales.)
+
+  Calibración ajustada en validación: a = 0.875 (log-loss 0.6287 -> 0.6276)
 
 PASO 2 - Reentrenar con train + val (2005-2023) y examinar en test (2024 en adelante)
-  TEST: acierto=0.6459  log-loss=0.6240  Brier=0.2176
-  Margen de error del acierto en test: ±0.32 puntos
+                                      partidos  acierto  log-loss   Brier
+  Modelo calibrado - todos               23134   0.6415    0.6279  0.2194
+  Modelo calibrado - sin retiradas       22303   0.6468    0.6232  0.2173
+  Modelo sin calibrar - todos            23134   0.6415    0.6287  0.2197
+  Modelo sin calibrar - sin retiradas     22303   0.6468    0.6233  0.2174
+  Elo fórmula - todos                    23134   0.6304    0.6448  0.2264
+  Margen de error del acierto en test: ±0.31 puntos
 
-PASO 3 - Acierto según la confianza del modelo (test)
+PASO 3 - Calibración en test (modelo calibrado): ¿cuando el favorito tiene un X %, gana un X %?
+   prob. favorito  partidos  predicho    real   dif.
+        0.50-0.55      5047     52.4%   51.4%  -1.0
+        0.55-0.60      4528     57.5%   58.3%  +0.9
+        0.60-0.65      3914     62.4%   61.9%  -0.5
+        0.65-0.70      3378     67.4%   68.4%  +1.0
+        0.70-0.75      2600     72.4%   72.8%  +0.4
+        0.75-0.80      1772     77.3%   77.3%  +0.0
+        0.80-0.85      1104     82.2%   81.4%  -0.8
+        0.85-0.90       554     87.1%   87.4%  +0.2
+        0.90-1.00       237     92.8%   96.2%  +3.4
+
+PASO 4 - Acierto según la confianza del modelo (test)
    confianza  partidos  % del total   acierto
-     >= 0.50     22303       100.0%     64.6%
-     >= 0.60     14325        64.2%     70.5%
-     >= 0.65     10681        47.9%     73.9%
-     >= 0.70      7504        33.6%     77.0%
-     >= 0.75      4822        21.6%     80.2%
-     >= 0.80      2756        12.4%     84.0%
-     >= 0.85      1389         6.2%     87.6%
+     >= 0.50     23134       100.0%     64.2%
+     >= 0.60     13559        58.6%     70.8%
+     >= 0.65      9645        41.7%     74.5%
+     >= 0.70      6267        27.1%     77.8%
+     >= 0.75      3667        15.9%     81.3%
+     >= 0.80      1895         8.2%     85.0%
+     >= 0.85       791         3.4%     90.0%
 
-Acierto por nivel (test):
-  Circuito principal   partidos=  6559  acierto=66.6%
-  Challenger           partidos= 15744  acierto=63.8%
+Acierto por nivel y superficie (test):
+  Circuito principal   partidos=  6776  acierto=66.4%  log-loss=0.6048
+  Challenger           partidos= 16358  acierto=63.2%  log-loss=0.6375
+  Grand Slams          partidos=  1260  acierto=73.6%
+  Hard                 partidos= 11941  acierto=64.5%
+  Clay                 partidos= 10300  acierto=63.9%
+  Grass                partidos=   893  acierto=63.0%
+
+PASO 5 - Reentrenar con todos los datos (2005 en adelante) y guardar el modelo final
+  Guardado: models/best_model.joblib (Conjunto (LogReg + media de árboles) (calibrado, a=0.875))
 
 Guardado: predictions_best.csv y train_best_report.txt

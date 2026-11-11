@@ -1,3 +1,13 @@
+"""
+Descarga partidos, jugadores y rankings ATP.
+
+Fuente: datos de Jeff Sackmann (https://github.com/JeffSackmann/tennis_atp), licencia
+CC BY-NC-SA 4.0, a través del espejo actualizado 'Aneeshers/tennis-sackmann-archive'.
+
+Salida: atp_matches.csv, atp_players.csv, atp_rankings.csv
+
+Ejecutar:  python data_set.py
+"""
 import pandas as pd
 
 BASE = "https://raw.githubusercontent.com/Aneeshers/tennis-sackmann-archive/main/atp/"
@@ -7,10 +17,9 @@ END_YEAR = 2026
 INCLUDE_FUTURES = False
 
 YEARS = range(START_YEAR, END_YEAR + 1)
-failed = []
 
 
-def load_years(prefix):
+def load_years(prefix, failed):
     dfs = []
     for y in YEARS:
         url = f"{BASE}{prefix}_{y}.csv"
@@ -21,43 +30,49 @@ def load_years(prefix):
         except Exception as e:
             failed.append((prefix, y, type(e).__name__))
     if not dfs:
-        raise RuntimeError(f"No se pudo descargar nada para '{prefix}'. Ejemplo de URL: {url}")
+        raise RuntimeError(f"No se pudo descargar nada para '{prefix}'. Ejemplo de URL: {BASE}{prefix}_{START_YEAR}.csv")
     return pd.concat(dfs, ignore_index=True)
 
 
-# Partidos
-main = load_years("atp_matches")
-main["level_source"] = "main"
+def main():
+    failed = []
 
-chall = load_years("atp_matches_qual_chall")
-chall["level_source"] = "challenger_qual"
+    # Partidos
+    main_tour = load_years("atp_matches", failed)
+    main_tour["level_source"] = "main"
 
-frames = [main, chall]
+    chall = load_years("atp_matches_qual_chall", failed)
+    chall["level_source"] = "challenger_qual"
 
-if INCLUDE_FUTURES:
-    futures = load_years("atp_matches_futures")
-    futures["level_source"] = "futures"
-    frames.append(futures)
+    frames = [main_tour, chall]
+    if INCLUDE_FUTURES:
+        futures = load_years("atp_matches_futures", failed)
+        futures["level_source"] = "futures"
+        frames.append(futures)
 
-matches = pd.concat(frames, ignore_index=True)
+    matches = pd.concat(frames, ignore_index=True)
 
-# Jugadores
-players = pd.read_csv(BASE + "atp_players.csv", low_memory=False)
+    # Jugadores
+    players = pd.read_csv(BASE + "atp_players.csv", low_memory=False)
 
-# Rankings: solo desde START_YEAR
-rank_files = ["00s", "10s", "20s", "current"]
-rankings = pd.concat(
-    [pd.read_csv(f"{BASE}atp_rankings_{r}.csv", low_memory=False) for r in rank_files],
-    ignore_index=True,
-)
-rankings = rankings[rankings["ranking_date"] >= START_YEAR * 10000]
-rankings = rankings.drop_duplicates().reset_index(drop=True)
+    # Rankings: solo desde START_YEAR
+    rank_files = ["00s", "10s", "20s", "current"]
+    rankings = pd.concat(
+        [pd.read_csv(f"{BASE}atp_rankings_{r}.csv", low_memory=False) for r in rank_files],
+        ignore_index=True,
+    )
+    rankings = rankings[rankings["ranking_date"] >= START_YEAR * 10000]
+    rankings = rankings.drop_duplicates().reset_index(drop=True)
 
-# Guardar en CSV
-matches.to_csv("atp_matches.csv", index=False)
-players.to_csv("atp_players.csv", index=False)
-rankings.to_csv("atp_rankings.csv", index=False)
+    matches.to_csv("atp_matches.csv", index=False)
+    players.to_csv("atp_players.csv", index=False)
+    rankings.to_csv("atp_rankings.csv", index=False)
 
-print("matches:", matches.shape, "| players:", players.shape, "| rankings:", rankings.shape)
-print(matches["level_source"].value_counts())
-print("Descargas fallidas:", failed if failed else "ninguna")
+    print("matches:", matches.shape, "| players:", players.shape, "| rankings:", rankings.shape)
+    print(matches["level_source"].value_counts())
+    # el año en curso puede no existir todavía: no es un error grave
+    print("Descargas fallidas:", failed if failed else "ninguna")
+
+
+if __name__ == "__main__":
+    main()
