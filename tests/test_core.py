@@ -149,3 +149,44 @@ def test_simulate_probabilities_sum():
     reach = simulate(prob, np.arange(n), sims=4000, rng=rng) / 4000
     assert reach[:, -1].sum() == pytest.approx(1.0)     # siempre hay exactamente un campeón
     assert reach[:, 1].sum() == pytest.approx(n / 2)
+
+
+# ---------------- reconstrucción de cuadros (backtest) ----------------
+from backtest_tournaments import BracketError, build_bracket  # noqa: E402
+
+
+def test_build_bracket_full_draw():
+    rows = [("QF", 1, 8), ("QF", 4, 5), ("QF", 2, 7), ("QF", 3, 6),
+            ("SF", 1, 4), ("SF", 3, 2), ("F", 3, 1)]
+    slots, rounds, reached = build_bracket(rows)
+    assert rounds == ["QF", "SF", "F"]
+    assert slots == [3, 6, 2, 7, 1, 8, 4, 5]          # 3 y 6 se cruzan en QF, su ganador con el de 2-7...
+    pairs = {frozenset(slots[i:i + 2]) for i in range(0, 8, 2)}
+    assert pairs == {frozenset(p) for p in [(1, 8), (4, 5), (2, 7), (3, 6)]}
+    assert reached == {3: 3, 1: 2, 2: 1, 4: 1, 8: 0, 5: 0, 7: 0, 6: 0}
+
+
+def test_build_bracket_with_byes():
+    # 6 jugadores: 1 y 2 empiezan en semis (BYE en cuartos)
+    rows = [("QF", 3, 4), ("QF", 5, 6), ("SF", 1, 3), ("SF", 2, 5), ("F", 2, 1)]
+    slots, rounds, reached = build_bracket(rows)
+    assert len(slots) == 8 and slots.count(BYE) == 2
+    assert sorted(s for s in slots if s != BYE) == [1, 2, 3, 4, 5, 6]
+    assert reached[2] == 3 and reached[1] == 2 and reached[4] == 0
+    # al simular con probabilidad 1 para el de menor id, gana el 1
+    players = [s for s in slots if s != BYE]
+    pos = {p: i for i, p in enumerate(players)}
+    prob = np.array([[0.5 if a == b else float(a < b) for b in players] for a in players])
+    sl = np.array([BYE if s == BYE else pos[s] for s in slots])
+    reach = simulate(prob, sl, sims=200, rng=np.random.default_rng(0)) / 200
+    assert reach[pos[1], -1] == 1.0
+
+
+@pytest.mark.parametrize("rows", [
+    [("RR", 1, 2), ("F", 1, 3)],                    # liguilla
+    [("QF", 1, 2), ("F", 1, 3)],                    # faltan las semifinales
+    [("SF", 1, 2), ("SF", 1, 3), ("F", 1, 4)],      # el mismo jugador gana dos semis
+])
+def test_build_bracket_rejects_bad_structures(rows):
+    with pytest.raises(BracketError):
+        build_bracket(rows)

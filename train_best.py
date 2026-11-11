@@ -95,6 +95,11 @@ def main():
     pt_raw = model.predict(test)
     pt = CalibratedModel.apply(pt_raw, calib_a)
     yt = test["target"].to_numpy()
+    # este modelo NO ha visto test: es el que usa backtest_tournaments.py para simular torneos de 2024+
+    MODELS_DIR.mkdir(exist_ok=True)
+    trainval_model = CalibratedModel(model, calib_a)
+    joblib.dump({"model": trainval_model, "features": FEATURES, "name": trainval_model.name,
+                 "trained_until": str(val["match_date"].max().date())}, MODELS_DIR / "model_trainval.joblib")
     no_ret = (test["is_retirement"] == 0).to_numpy()
 
     say(f"  {'':34s} {'partidos':>9s} {'acierto':>8s} {'log-loss':>9s} {'Brier':>7s}")

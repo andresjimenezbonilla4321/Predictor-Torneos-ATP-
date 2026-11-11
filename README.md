@@ -17,6 +17,32 @@ de que cada jugador llegue a cada ronda y gane el título.
 - **Bien calibrado**: un 70 % predicho gana ~70 % de las veces (tabla en `train_best_report.txt`),
   requisito para que las simulaciones de torneos tengan sentido.
 
+## Backtest de torneos (¿sirve para predecir torneos?)
+
+`backtest_tournaments.py` simula los **678 torneos reales de 2024 – junio 2026** con lo que se
+sabía antes de empezar cada uno (modelo entrenado solo con 2005–2023) y compara con lo que pasó.
+Informe completo en `backtest_report.txt`.
+
+| Grupo | Torneos | Log-loss del campeón: modelo | Solo Elo | Azar | Mejora frente al Elo (IC 95 %) |
+|---|---:|---:|---:|---:|---|
+| Todos | 678 | **2,808** | 2,920 | 3,502 | +0,112 [+0,068, +0,155] significativa |
+| Grand Slam | 10 | **1,414** | 1,588 | 4,852 | +0,174 [+0,015, +0,334] significativa |
+| Masters 1000 | 23 | **2,571** | 2,943 | 4,400 | +0,372 [+0,006, +0,738] significativa |
+| ATP 250/500 | 118 | 2,576 | 2,560 | 3,398 | −0,017 [−0,099, +0,066] no concluyente |
+| Challenger | 527 | **2,897** | 3,025 | 3,461 | +0,128 [+0,078, +0,178] significativa |
+
+- **Calibrado también a nivel de torneo**: a los jugadores a los que se daba un 10–20 % de ser
+  campeones, ganaron el 12,9 % de las veces (predicho 13,4 %); para llegar a semis, 25,9 % predicho
+  frente a 26,1 % real. Solo los grandes favoritos (> 50 % de ser campeón, 11 casos) ganaron menos
+  de lo previsto (36 % frente a 54 %): muestra pequeña, pero apunta a algo de exceso de confianza arriba.
+- **Grand Slams**: el campeón estuvo siempre entre los 4 favoritos del modelo y en 8 de 10 entre
+  los 2 primeros (el duelo Sinner–Alcaraz hace que el favorito nº 1 solo ganara 2 de 10).
+
+```bash
+python backtest_tournaments.py                                  # todos los torneos de test
+python backtest_tournaments.py --show "Roland Garros" --year 2025   # un torneo concreto
+```
+
 ## Instalación
 
 ```bash
@@ -28,7 +54,7 @@ pip install -r requirements.txt
 ## Uso
 
 ```bash
-# 1) Descargar datos, calcular todo y entrenar (≈ 3 min)
+# 1) Descargar datos, calcular todo y entrenar (≈ 3 min; añade --backtest para validar torneos)
 python run_pipeline.py
 
 # 2) Predecir un partido
@@ -60,10 +86,11 @@ Por defecto se usa una semana después del último torneo de los datos.
 | 4 | `add_features.py` | Forma, descanso, inactividad, cansancio y cara a cara |
 | 5 | `add_serve_stats.py` | % puntos ganados al saque/resto, aces, dobles faltas, 1er saque (suavizados) |
 | 6 | `build_model_dataset.py` | Jugadores A/B al azar, diferencias A − B, split temporal |
-| 7 | `train_best.py` | Elige modelo por log-loss en validación, calibra, evalúa en test, guarda `models/best_model.joblib` |
+| 7 | `train_best.py` | Elige modelo por log-loss en validación, calibra, evalúa en test; guarda `models/best_model.joblib` (todos los datos) y `models/model_trainval.joblib` (2005–2023, para el backtest) |
 | — | `train_baseline.py` | Comparativa: cuánto aporta cada grupo de características |
 | — | `predict.py` | Predicción de partidos futuros con el estado actual de cada jugador |
 | — | `simulate_tournament.py` | Simulación Monte Carlo de un cuadro |
+| — | `backtest_tournaments.py` | Simula los torneos reales de test y mide si las predicciones de torneo aciertan |
 
 `common.py` contiene la configuración y las funciones compartidas: el entrenamiento y la
 predicción calculan las características con **el mismo código**.
