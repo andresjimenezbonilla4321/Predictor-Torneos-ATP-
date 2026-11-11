@@ -5,6 +5,7 @@ Ejecuta todo el pipeline en orden.
   python run_pipeline.py --skip-download  # usa los CSV ya descargados
   python run_pipeline.py --from compute_elo
   python run_pipeline.py --baseline       # incluye también train_baseline.py (comparativa de features)
+  python run_pipeline.py --backtest       # al final, simula los torneos reales de test (≈ 2-3 min)
 """
 import argparse
 import subprocess
@@ -22,6 +23,7 @@ def main():
     ap.add_argument("--skip-download", action="store_true", help="no volver a descargar los datos")
     ap.add_argument("--from", dest="start", choices=STEPS, help="empezar en este paso")
     ap.add_argument("--baseline", action="store_true", help="ejecutar también train_baseline.py")
+    ap.add_argument("--backtest", action="store_true", help="ejecutar también backtest_tournaments.py al final")
     args = ap.parse_args()
 
     steps = STEPS[STEPS.index(args.start):] if args.start else list(STEPS)
@@ -29,6 +31,8 @@ def main():
         steps.remove("data_set")
     if args.baseline:
         steps.insert(steps.index("train_best") if "train_best" in steps else len(steps), "train_baseline")
+    if args.backtest:
+        steps.append("backtest_tournaments")
 
     t_all = time.time()
     for step in steps:
