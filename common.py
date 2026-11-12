@@ -35,7 +35,8 @@ SHRINK_PTS = 300         # "puntos imaginarios" con la media del circuito (~4 pa
 
 # Características que usa el modelo (todas son diferencias A - B: cambian de signo
 # si se intercambian A y B, lo que permite un modelo simétrico)
-FEATURES = ["elo_diff", "elo_surf_diff", "elo_diff_bo5", "log_rank_diff", "age_diff", "ht_diff",
+FEATURES = ["elo_diff", "elo_surf_diff", "elo_diff_bo5", "elo_diff_main", "elo_trend_diff",
+            "log_rank_diff", "log_points_diff", "age_diff", "ht_diff",
             "lefty_diff", "exp_diff", "form_diff", "rest_diff", "layoff_diff", "games14_diff",
             "h2h_diff", "spw_diff", "rpw_diff", "ace_diff", "df_diff", "fin_diff"]
 # -----------------------------------------------------------------------
@@ -52,6 +53,13 @@ def total_games(score):
     """Juegos totales de un marcador tipo '6-4 3-6 7-6(5) [10-8]' (el super tie-break no cuenta)."""
     s = re.sub(r"\[.*?\]", "", str(score))
     return sum(int(a) + int(b) for a, b in re.findall(r"(\d+)-(\d+)", s))
+
+
+def games_split(score):
+    """(juegos del ganador, juegos del perdedor) de un marcador; el ganador va siempre primero."""
+    s = re.sub(r"\[.*?\]", "", str(score))
+    pairs = re.findall(r"(\d+)-(\d+)", s)
+    return sum(int(a) for a, _ in pairs), sum(int(b) for _, b in pairs)
 
 
 # ------------------------------- Elo -------------------------------
@@ -110,11 +118,12 @@ def serve_state(hist, prior):
 
 
 # ---------------------- Características del modelo ----------------------
-def make_features(A, B, best_of):
+def make_features(A, B, best_of, is_main=1):
     """
     A, B: dicts con los valores de cada jugador (arrays o escalares):
-          elo, elo_surf, rank, age, ht, hand, n, form, rest, layoff, g14, h2h, spw, rpw, ace, df, fin
-          (h2h = victorias de ese jugador sobre el otro)
+          elo, elo_surf, trend, rank, points, age, ht, hand, n, form, rest, layoff, g14, h2h,
+          spw, rpw, ace, df, fin   (h2h = victorias de ese jugador sobre el otro)
+    best_of: 3 o 5 | is_main: 1 = circuito principal, 0 = Challenger
     Devuelve un dict {feature: array} con las diferencias A - B.
     La usan build_model_dataset.py (histórico) y predict.py (futuro): mismas fórmulas.
     """
@@ -122,6 +131,7 @@ def make_features(A, B, best_of):
     rank_a = np.nan_to_num(f(A, "rank"), nan=UNRANKED_VALUE)
     rank_b = np.nan_to_num(f(B, "rank"), nan=UNRANKED_VALUE)
     bo5 = (np.asarray(best_of, dtype=float) == 5).astype(float)
+    main = np.asarray(is_main, dtype=float)
     elo_diff = f(A, "elo") - f(B, "elo")
     h2h_a, h2h_b = f(A, "h2h"), f(B, "h2h")
     out = {
@@ -131,8 +141,15 @@ def make_features(A, B, best_of):
                          - np.where(np.isnan(f(B, "elo_surf")), f(B, "elo"), f(B, "elo_surf")),
         # al mejor de 5 sets el favorito gana más a menudo: el modelo aprende cuánto
         "elo_diff_bo5": elo_diff * bo5,
+        # en el circuito principal el Elo puede pesar distinto que en los Challenger
+        "elo_diff_main": elo_diff * main,
+        # tendencia: cuánto ha subido (o bajado) el Elo de cada uno en los últimos meses
+        "elo_trend_diff": f(A, "trend") - f(B, "trend"),
         # logaritmo: pasar del puesto 1 al 10 pesa más que del 101 al 110
         "log_rank_diff": np.log(rank_a) - np.log(rank_b),
+        # puntos ATP (más finos que el puesto); sin ranking = 0 puntos
+        "log_points_diff": np.log1p(np.nan_to_num(f(A, "points"), nan=0.0))
+                           - np.log1p(np.nan_to_num(f(B, "points"), nan=0.0)),
         # alturas/edades que faltan -> diferencia 0 ("sin información")
         "age_diff": np.nan_to_num(f(A, "age") - f(B, "age"), nan=0.0),
         "ht_diff": np.nan_to_num(f(A, "ht") - f(B, "ht"), nan=0.0),
@@ -208,8 +225,15 @@ class SymmetricModel:
     kind = "logreg" (regresión logística sin intercepto) o "hgb" (gradient boosting con datos espejo).
     """
 
-    def __init__(self, name, kind, params=None, features=FEATURES):
+    def __init__(self, name, kind, params=None, features=FEATURES, tau=None):
         self.name, self.kind, self.params, self.features = name, kind, params, list(features)
+        self.tau = tau   # años: si se indica, los partidos recientes pesan más al entrenar
+
+    def _weights(self, df):
+        if not self.tau or "match_date" not in df:
+            return None
+        years = df["match_date"].dt.year + df["match_date"].dt.dayofyear / 365.0
+        return np.exp((years - years.max()).to_numpy() / self.tau)
 
     def fit(self, df):
         from sklearn.ensemble import HistGradientBoostingClassifier
@@ -219,16 +243,18 @@ class SymmetricModel:
 
         X = df[self.features].to_numpy(dtype=float)
         y = df["target"].to_numpy()
+        w = self._weights(df)
         if self.kind == "logreg":
             self.model = make_pipeline(StandardScaler(with_mean=False),
                                        LogisticRegression(fit_intercept=False, max_iter=2000))
-            self.model.fit(X, y)
+            self.model.fit(X, y, logisticregression__sample_weight=w)
         else:
             depth, lr, it, leaf = self.params
             self.model = HistGradientBoostingClassifier(max_depth=depth, learning_rate=lr, max_iter=it,
                                                         min_samples_leaf=leaf, l2_regularization=5.0,
                                                         random_state=0)
-            self.model.fit(np.vstack([X, -X]), np.concatenate([y, 1 - y]))
+            self.model.fit(np.vstack([X, -X]), np.concatenate([y, 1 - y]),
+                           sample_weight=None if w is None else np.concatenate([w, w]))
         return self
 
     def predict(self, df):

@@ -6,6 +6,7 @@ Ejecuta todo el pipeline en orden.
   python run_pipeline.py --from compute_elo
   python run_pipeline.py --baseline       # incluye también train_baseline.py (comparativa de features)
   python run_pipeline.py --backtest       # al final, simula los torneos reales de test (≈ 2-3 min)
+  python run_pipeline.py --odds           # al final, compara con las casas de apuestas
 """
 import argparse
 import subprocess
@@ -24,6 +25,7 @@ def main():
     ap.add_argument("--from", dest="start", choices=STEPS, help="empezar en este paso")
     ap.add_argument("--baseline", action="store_true", help="ejecutar también train_baseline.py")
     ap.add_argument("--backtest", action="store_true", help="ejecutar también backtest_tournaments.py al final")
+    ap.add_argument("--odds", action="store_true", help="ejecutar también compare_odds.py al final")
     args = ap.parse_args()
 
     steps = STEPS[STEPS.index(args.start):] if args.start else list(STEPS)
@@ -33,6 +35,8 @@ def main():
         steps.insert(steps.index("train_best") if "train_best" in steps else len(steps), "train_baseline")
     if args.backtest:
         steps.append("backtest_tournaments")
+    if args.odds:
+        steps.append("compare_odds")
 
     t_all = time.time()
     for step in steps:
@@ -44,6 +48,7 @@ def main():
         print(f"--- {step}.py terminado en {time.time() - t:.0f} s", flush=True)
     print(f"\nPipeline completo en {time.time() - t_all:.0f} s.")
     print('Prueba:  python predict.py "Jannik Sinner" "Carlos Alcaraz" --surface Clay --best-of 5')
+    print("Web:     streamlit run app.py")
 
 
 if __name__ == "__main__":

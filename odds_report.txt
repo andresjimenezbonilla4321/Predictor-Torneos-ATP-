@@ -1,0 +1,34 @@
+COMPARACIÓN CON LAS CASAS DE APUESTAS - partidos de test (2024 en adelante)
+Partidos emparejados con cuotas: 5,881 de 6,776 del circuito principal en test (coincidencia de ganador: 99.95 %)
+Margen medio de la casa: 5.2 % (se quita para obtener su probabilidad)
+
+1) MISMOS PARTIDOS, TRES PREDICTORES
+                                   acierto  log-loss   Brier
+   Casa de apuestas                 68.98%    0.5855  0.2009
+   Modelo                           66.94%    0.6011  0.2078
+   Elo (fórmula)                    65.53%    0.6164  0.2138
+   Mezcla (peso modelo 0.00)        68.98%    0.5855  0.2009
+
+   Peso de la mezcla elegido en validación 2022-2023 (4,761 partidos con cuotas): 0.00
+   Diferencia de log-loss modelo - casa: +0.0157 [+0.0115, +0.0198] IC 95 % (> 0 = la casa es mejor)
+
+   Por categoría (acierto modelo / casa):
+   ATP250          2012 partidos   modelo  63.2 %   casa  66.3 %
+   ATP500          1054 partidos   modelo  67.8 %   casa  70.3 %
+   Grand Slam      1053 partidos   modelo  73.9 %   casa  76.0 %
+   Masters 1000    1739 partidos   modelo  66.4 %   casa  67.1 %
+   Masters Cup       23 partidos   modelo  78.3 %   casa  73.9 %
+
+2) EL MODELO Y LA CASA ELIGEN AL MISMO FAVORITO en el 88.2 % de los partidos.
+   Cuando no coinciden (696 partidos): acierta el modelo el 41.4 %, la casa el 58.6 %
+
+3) APUESTAS SIMULADAS (1 unidad por apuesta, cuotas de la fuente) - solo como ejercicio
+   Se apuesta al jugador cuando prob_modelo x cuota > 1 + umbral.
+    umbral  apuestas  acertadas  beneficio      ROI
+        0%      4292       1623     -361.8    -8.4%
+        3%      3565       1249     -325.1    -9.1%
+        5%      3174       1062     -310.2    -9.8%
+       10%      2338        706     -231.7    -9.9%
+   (ROI negativo = se pierde dinero. Superar a las casas de forma sostenida es muy difícil.)
+
+Guardado: odds_report.txt y odds_matches.csv

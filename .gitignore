@@ -13,6 +13,10 @@ model_dataset.csv
 predictions_best.csv
 backtest_tournaments.csv
 backtest_tournaments_val.csv
+odds_matches.csv
+
+# Cuotas descargadas
+odds/
 
 # Python
 __pycache__/
@@ -22,3 +26,6 @@ __pycache__/
 # Estado y modelos generados por el pipeline
 state/
 models/
+
+# Configuración local de herramientas
+.claude/

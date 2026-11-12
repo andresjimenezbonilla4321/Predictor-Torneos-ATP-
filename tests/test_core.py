@@ -70,7 +70,7 @@ def test_serve_state_shrinks_to_prior():
 
 # ---------------- características ----------------
 def _player(**kw):
-    base = dict(elo=1800.0, elo_surf=1750.0, rank=20.0, age=25.0, ht=185.0, hand="R", n=100.0, form=0.6,
+    base = dict(elo=1800.0, elo_surf=1750.0, trend=30.0, rank=20.0, points=2000.0, age=25.0, ht=185.0, hand="R", n=100.0, form=0.6,
                 rest=7.0, layoff=7.0, g14=40.0, h2h=2.0, spw=0.65, rpw=0.38, ace=0.08, df=0.03, fin=0.6)
     base.update(kw)
     return {k: np.array([v], dtype=object if k == "hand" else float) for k, v in base.items()}
@@ -78,7 +78,8 @@ def _player(**kw):
 
 def test_make_features_antisymmetric():
     A = _player()
-    B = _player(elo=1700.0, elo_surf=np.nan, rank=np.nan, age=np.nan, hand="L", h2h=5.0, layoff=200.0)
+    B = _player(elo=1700.0, elo_surf=np.nan, trend=-40.0, rank=np.nan, points=np.nan, age=np.nan, hand="L",
+                h2h=5.0, layoff=200.0)
     fab, fba = make_features(A, B, [5]), make_features(B, A, [5])
     assert list(fab) == FEATURES
     for k in FEATURES:
@@ -190,3 +191,46 @@ def test_build_bracket_with_byes():
 def test_build_bracket_rejects_bad_structures(rows):
     with pytest.raises(BracketError):
         build_bracket(rows)
+
+
+# ---------------- Elo mejorado y cuotas ----------------
+from common import games_split  # noqa: E402
+from compare_odds import blend, odds_key, player_key  # noqa: E402
+from compute_elo import elo_trend  # noqa: E402
+
+
+def test_games_split():
+    assert games_split("6-1 6-1") == (12, 2)
+    assert games_split("7-6(5) 6-7(3) 7-6(8)") == (20, 19)
+    assert games_split("6-4 3-6 [10-8]") == (9, 10)       # el ganador puede tener menos juegos
+    assert games_split("W/O") == (0, 0)
+
+
+def test_elo_trend():
+    hist_d = {1: [0, 50, 100, 150]}
+    hist_r = {1: [1500, 1550, 1600, 1650]}
+    assert elo_trend(hist_d, hist_r, 1, 1700, d=200, days=90) == 1700 - 1600   # Elo del día 100 (<= 110)
+    assert elo_trend(hist_d, hist_r, 1, 1700, d=60, days=90) == 0.0           # sin historial tan antiguo
+    assert elo_trend(hist_d, hist_r, 2, 1700, d=200, days=90) == 0.0          # jugador sin historial
+
+
+@pytest.mark.parametrize("name, key", [
+    ("Sinner J.", "sinner_j"),
+    ("De Minaur A.", "deminaur_a"),
+    ("Auger-Aliassime F.", "augeraliassime_f"),
+    ("Etcheverry T.M.", "etcheverry_t"),
+])
+def test_odds_key(name, key):
+    assert odds_key(name) == key
+
+
+def test_player_key_matches_odds_key():
+    assert player_key("Alex", "De Minaur") == odds_key("De Minaur A.")
+    assert player_key("Félix", "Auger Aliassime") == odds_key("Auger-Aliassime F.")
+
+
+def test_blend_extremes():
+    pm, pb = np.array([0.7]), np.array([0.6])
+    assert blend(pm, pb, 1.0)[0] == pytest.approx(0.7)
+    assert blend(pm, pb, 0.0)[0] == pytest.approx(0.6)
+    assert 0.6 < blend(pm, pb, 0.5)[0] < 0.7

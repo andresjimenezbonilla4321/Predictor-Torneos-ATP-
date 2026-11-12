@@ -24,6 +24,7 @@ import joblib
 import numpy as np
 import pandas as pd
 
+from compute_elo import elo_trend
 from common import (LAYOFF_CAP, MODELS_DIR, START_RATING, expected, history_state, inactivity_shrink,
                     load_state, make_features, serve_state, to_day)
 
@@ -64,7 +65,9 @@ class Predictor:
         date_int = int(self.date.strftime("%Y%m%d"))
         last = r.loc[r["ranking_date"] <= date_int, "ranking_date"].max()
         self.ranking_date = last
-        self.rank = r[r["ranking_date"] == last].drop_duplicates("player").set_index("player")["rank"].to_dict()
+        week = r[r["ranking_date"] == last].drop_duplicates("player").set_index("player")
+        self.rank = week["rank"].to_dict()
+        self.points = week["points"].to_dict()
 
     # ------------------------- buscar jugadores -------------------------
     def find_player(self, query):
@@ -94,6 +97,13 @@ class Predictor:
         return self.players.at[pid, "name"] if pid in self.players.index else str(pid)
 
     # ------------------------- estado de un jugador -------------------------
+    def current_elo(self, pid):
+        """Elo general del jugador en la fecha de la predicción (con el ajuste por inactividad)."""
+        e, prm = self.elo, self.elo["params"]
+        last = e["last_day"].get(pid)
+        gap = self.day - last if last is not None else 0
+        return inactivity_shrink(e["gen_r"].get(pid, START_RATING), gap, prm["min_days"], prm["shrink"])
+
     def profile(self, pid, surface):
         """Valores del jugador el día de la predicción (lo mismo que ve el modelo al entrenar)."""
         d = self.day
@@ -124,31 +134,34 @@ class Predictor:
         ht = float(info["height"]) if info is not None and pd.notna(info["height"]) else np.nan
         hand = info["hand"] if info is not None and info["hand"] in ("L", "R") else np.nan
 
-        return {"id": pid, "elo": elo, "elo_surf": elo_surf, "rank": self.rank.get(pid, np.nan),
+        trend = elo_trend(e.get("hist_d", {}), e.get("hist_r", {}), pid, elo, d, e.get("trend_days", 90))
+
+        return {"id": pid, "elo": elo, "elo_surf": elo_surf, "trend": trend,
+                "rank": self.rank.get(pid, np.nan), "points": self.points.get(pid, np.nan),
                 "age": age, "ht": ht if 160 <= ht <= 215 else np.nan, "hand": hand,
                 "n": e["gen_n"].get(pid, 0), "form": form, "rest": rest, "layoff": layoff, "g14": g14,
                 "spw": spw, "rpw": rpw, "ace": ace, "df": df, "fin": fin, "n_serve": ns}
 
     # ------------------------- probabilidades -------------------------
-    def pairs_proba(self, pairs, surface, best_of, profiles=None):
-        """Probabilidad de que gane el primero en cada pareja (a_id, b_id)."""
+    def pairs_proba(self, pairs, surface, best_of, profiles=None, is_main=1):
+        """Probabilidad de que gane el primero en cada pareja (a_id, b_id). is_main=0 para Challenger."""
         profiles = profiles or {}
         for pid in {x for pair in pairs for x in pair}:
             if pid not in profiles:
                 profiles[pid] = self.profile(pid, surface)
-        keys = ["elo", "elo_surf", "rank", "age", "ht", "hand", "n", "form", "rest", "layoff", "g14",
-                "spw", "rpw", "ace", "df", "fin"]
+        keys = ["elo", "elo_surf", "trend", "rank", "points", "age", "ht", "hand", "n", "form", "rest",
+                "layoff", "g14", "spw", "rpw", "ace", "df", "fin"]
         A = {k: np.array([profiles[a][k] for a, _ in pairs], dtype=object if k == "hand" else float) for k in keys}
         B = {k: np.array([profiles[b][k] for _, b in pairs], dtype=object if k == "hand" else float) for k in keys}
         h2h = self.hist["h2h"]
         A["h2h"] = np.array([h2h.get((a, b), 0) for a, b in pairs], dtype=float)
         B["h2h"] = np.array([h2h.get((b, a), 0) for a, b in pairs], dtype=float)
-        X = pd.DataFrame(make_features(A, B, np.full(len(pairs), best_of)))
+        X = pd.DataFrame(make_features(A, B, np.full(len(pairs), best_of), np.full(len(pairs), is_main)))
         return self.model.predict(X[self.features])
 
-    def match_proba(self, player_a, player_b, surface="Hard", best_of=3):
+    def match_proba(self, player_a, player_b, surface="Hard", best_of=3, is_main=1):
         a, b = self.find_player(player_a), self.find_player(player_b)
-        return float(self.pairs_proba([(a, b)], surface, best_of)[0])
+        return float(self.pairs_proba([(a, b)], surface, best_of, is_main=is_main)[0])
 
 
 def main():
@@ -157,19 +170,21 @@ def main():
     ap.add_argument("player_b")
     ap.add_argument("--surface", default="Hard", choices=["Hard", "Clay", "Grass", "Carpet"])
     ap.add_argument("--best-of", type=int, default=3, choices=[3, 5])
+    ap.add_argument("--challenger", action="store_true", help="partido de un torneo Challenger")
     ap.add_argument("--date", help="fecha del partido (AAAA-MM-DD). Por defecto: 1 semana tras el fin de los datos")
     args = ap.parse_args()
 
     pr = Predictor(date=args.date)
     a, b = pr.find_player(args.player_a), pr.find_player(args.player_b)
-    p = float(pr.pairs_proba([(a, b)], args.surface, args.best_of)[0])
+    p = float(pr.pairs_proba([(a, b)], args.surface, args.best_of, is_main=0 if args.challenger else 1)[0])
     pa, pb = pr.profile(a, args.surface), pr.profile(b, args.surface)
     na, nb = pr.name(a), pr.name(b)
 
     print(f"\n{na} vs {nb}  |  {args.surface}, al mejor de {args.best_of}  |  fecha {pr.date.date()}")
     print(f"Modelo: {pr.model_name}  |  datos hasta {pr.data_end.date()}  |  ranking del {pr.ranking_date}\n")
     rows = [("Elo general", "elo", "{:.0f}"), (f"Elo {args.surface}", "elo_surf", "{:.0f}"),
-            ("Ranking ATP", "rank", "{:.0f}"), ("Forma (últ. 10, suavizada)", "form", "{:.2f}"),
+            ("Ranking ATP", "rank", "{:.0f}"), ("Puntos ATP", "points", "{:.0f}"),
+            ("Tendencia Elo (90 días)", "trend", "{:+.0f}"), ("Forma (últ. 10, suavizada)", "form", "{:.2f}"),
             ("Días sin jugar", "layoff", "{:.0f}"), ("% puntos ganados al saque", "spw", "{:.3f}"),
             ("% puntos ganados al resto", "rpw", "{:.3f}"), ("Partidos en los datos", "n", "{:.0f}")]
     print(f"  {'':28s} {na[:22]:>22s} {nb[:22]:>22s}")

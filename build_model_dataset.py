@@ -34,11 +34,13 @@ PLAYER_COLS = {
     "id": ("winner_id", "loser_id"),
     "name": ("winner_name", "loser_name"),
     "rank": ("winner_rank", "loser_rank"),
+    "points": ("winner_rank_points", "loser_rank_points"),
     "age": ("winner_age", "loser_age"),
     "ht": ("winner_ht", "loser_ht"),
     "hand": ("winner_hand", "loser_hand"),
     "elo": ("elo_w", "elo_l"),
     "elo_surf": ("elo_surf_w", "elo_surf_l"),
+    "trend": ("trend_w", "trend_l"),
     "n": ("n_w", "n_l"),
     "form": ("form_w", "form_l"),
     "rest": ("rest_w", "rest_l"),
@@ -74,7 +76,7 @@ def main():
     target = (~swap).astype(int)         # 1 si A es el ganador real
 
     # ---------- 3) Características como diferencias (A - B) ----------
-    feats = make_features(A, B, m["best_of"].to_numpy())
+    feats = make_features(A, B, m["best_of"].to_numpy(), (m["level_source"] == "main").to_numpy())
 
     out = pd.DataFrame({
         "match_date": m["tourney_date"],

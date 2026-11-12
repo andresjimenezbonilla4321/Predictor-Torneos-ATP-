@@ -25,6 +25,9 @@ from common import (FEATURES, MODELS_DIR, CalibratedModel, EnsembleModel, Symmet
 INPUT = "model_dataset.csv"
 # candidatos de árboles: (profundidad, velocidad de aprendizaje, nº de árboles, mínimo por hoja)
 HGB_GRID = [(3, 0.05, 300, 200), (4, 0.03, 400, 200), (6, 0.03, 300, 100), (8, 0.02, 400, 100)]
+# peso por recencia de la regresión logística (años): elegido en validación (log-loss 0.6259 -> 0.6249).
+# En los árboles no mejora, así que no se usa.
+LOGREG_TAU = 4
 # -----------------------------------------------------------------
 
 
@@ -34,7 +37,7 @@ def fit_rows(df):
 
 
 def build_candidates():
-    logreg = SymmetricModel("LogReg", "logreg")
+    logreg = SymmetricModel("LogReg", "logreg", tau=LOGREG_TAU)
     trees = [SymmetricModel(f"Árboles prof={g[0]} lr={g[1]} n={g[2]} hoja={g[3]}", "hgb", g) for g in HGB_GRID]
     return logreg, trees
 

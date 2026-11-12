@@ -38,8 +38,8 @@ SIMS = 10000
 SEED = 0
 ROUND_SEQ = ["R128", "R64", "R32", "R16", "QF", "SF", "F"]
 LEVELS = {"G": "Grand Slam", "M": "Masters 1000", "A": "ATP 250/500", "C": "Challenger"}
-PROFILE_KEYS = ["elo", "elo_surf", "rank", "age", "ht", "hand", "n", "form", "rest", "layoff", "g14",
-                "spw", "rpw", "ace", "df", "fin"]
+PROFILE_KEYS = ["elo", "elo_surf", "trend", "rank", "points", "age", "ht", "hand", "n", "form", "rest",
+                "layoff", "g14", "spw", "rpw", "ace", "df", "fin"]
 # -----------------------------------------------------------------
 
 
@@ -200,7 +200,8 @@ def run_backtest(split, a_values, sims=SIMS, show=None, year=None):
                 side = g[g["winner_id"] == p]
                 pre = "winner" if len(side) else "loser"
                 r0 = side.iloc[0] if len(side) else g[g["loser_id"] == p].iloc[0]
-                profiles[p] = {"elo": START_RATING, "elo_surf": START_RATING, "rank": r0[f"{pre}_rank"],
+                profiles[p] = {"elo": START_RATING, "elo_surf": START_RATING, "trend": 0.0,
+                               "rank": r0[f"{pre}_rank"], "points": r0[f"{pre}_rank_points"],
                                "age": r0[f"{pre}_age"], "ht": r0[f"{pre}_ht"], "hand": r0[f"{pre}_hand"],
                                "n": 0, "form": 0.5, "rest": REST_CAP, "layoff": LAYOFF_CAP, "g14": 0,
                                **{k: prior[k] for k in ("spw", "rpw", "ace", "df", "fin")}}
@@ -215,7 +216,8 @@ def run_backtest(split, a_values, sims=SIMS, show=None, year=None):
         hs = snap.get(tid, {})
         A["h2h"] = np.array([hs.get((a, b), 0) for a, b in pairs], dtype=float)
         B["h2h"] = np.array([hs.get((b, a), 0) for a, b in pairs], dtype=float)
-        X = pd.DataFrame(make_features(A, B, np.full(len(pairs), best_of)))[features]
+        is_main = 0 if info["tourney_level"] == "C" else 1
+        X = pd.DataFrame(make_features(A, B, np.full(len(pairs), best_of), np.full(len(pairs), is_main)))[features]
         p_raw = base.predict(X)
         p_elo = expected(A["elo"], B["elo"])
 
